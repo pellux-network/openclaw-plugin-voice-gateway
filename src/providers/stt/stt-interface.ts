@@ -1,6 +1,5 @@
 import type {
   SttProvider, SttStream, SttResult, SttStreamOptions, SttBatchOptions,
-  ResolvedDeepgramConfig, ResolvedWhisperConfig, ResolvedLocalWhisperConfig,
   ResolvedSttConfig,
 } from "../../types.js";
 
@@ -18,15 +17,15 @@ export async function createSttProvider(
   switch (name) {
     case "deepgram": {
       const { DeepgramStt } = await import("./deepgram-stt.js");
-      return new DeepgramStt(config.deepgram as ResolvedDeepgramConfig);
+      return new DeepgramStt(config.deepgram);
     }
     case "whisper": {
       const { WhisperStt } = await import("./whisper-stt.js");
-      return new WhisperStt(config.whisper as ResolvedWhisperConfig);
+      return new WhisperStt(config.whisper);
     }
     case "local-whisper": {
       const { LocalWhisperStt } = await import("./local-whisper-stt.js");
-      return new LocalWhisperStt(config.localWhisper as ResolvedLocalWhisperConfig);
+      return new LocalWhisperStt(config.localWhisper);
     }
   }
 }

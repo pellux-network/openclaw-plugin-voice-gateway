@@ -35,11 +35,9 @@ export class SpeechToSpeechEngine extends EventEmitter implements VoiceEngine {
       throw new Error("S2S provider not configured");
     }
 
-    const providerConfig = config.s2s.provider === "openai-realtime"
-      ? config.s2s.openaiRealtime
-      : config.s2s.geminiLive;
-
-    this.provider = await createS2sProvider(config.s2s.provider, providerConfig);
+    this.provider = config.s2s.provider === "openai-realtime"
+      ? await createS2sProvider("openai-realtime", config.s2s.openaiRealtime)
+      : await createS2sProvider("gemini-live", config.s2s.geminiLive);
 
     const tools = this.coreBridge.getAvailableTools();
 

@@ -54,7 +54,11 @@ export class AudioSender extends EventEmitter {
    * The stream should emit Buffers of 16-bit PCM at the given sampleRate.
    */
   playStream(
-    source: EventEmitter & { on(event: "audio", handler: (chunk: Buffer, sampleRate: number) => void): unknown },
+    source: EventEmitter & {
+      on(event: "audio", handler: (chunk: Buffer, sampleRate: number) => void): unknown;
+      once(event: "end", handler: () => void): unknown;
+      once(event: "error", handler: (err: Error) => void): unknown;
+    },
   ): void {
     const passthrough = new Readable({ read() {} });
 
@@ -65,8 +69,8 @@ export class AudioSender extends EventEmitter {
 
     // End the stream when the source signals completion
     const finish = () => { passthrough.push(null); };
-    source.once("end" as never, finish);
-    source.once("error" as never, (err: Error) => {
+    source.once("end", finish);
+    source.once("error", (err: Error) => {
       passthrough.destroy(err);
     });
 

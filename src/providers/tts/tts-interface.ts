@@ -1,7 +1,6 @@
 import type {
   TtsProvider, TtsStream, TtsResult, TtsOptions,
-  ResolvedCartesiaConfig, ResolvedElevenLabsConfig, ResolvedOpenAiTtsConfig,
-  ResolvedKokoroConfig, ResolvedTtsConfig,
+  ResolvedTtsConfig,
 } from "../../types.js";
 
 export type { TtsProvider, TtsStream, TtsResult, TtsOptions };
@@ -16,19 +15,19 @@ export async function createTtsProvider(
   switch (name) {
     case "cartesia": {
       const { CartesiaTts } = await import("./cartesia-tts.js");
-      return new CartesiaTts(config.cartesia as ResolvedCartesiaConfig);
+      return new CartesiaTts(config.cartesia);
     }
     case "elevenlabs": {
       const { ElevenLabsTts } = await import("./elevenlabs-tts.js");
-      return new ElevenLabsTts(config.elevenlabs as ResolvedElevenLabsConfig);
+      return new ElevenLabsTts(config.elevenlabs);
     }
     case "openai": {
       const { OpenAiTts } = await import("./openai-tts.js");
-      return new OpenAiTts(config.openai as ResolvedOpenAiTtsConfig);
+      return new OpenAiTts(config.openai);
     }
     case "kokoro": {
       const { KokoroTts } = await import("./kokoro-tts.js");
-      return new KokoroTts(config.kokoro as ResolvedKokoroConfig);
+      return new KokoroTts(config.kokoro);
     }
   }
 }

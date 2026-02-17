@@ -115,6 +115,11 @@ function requireField(value: string | undefined, envKey: string, fieldName: stri
   return resolved;
 }
 
+function assertVoiceMode(value: string): VoiceMode {
+  if (value === "auto" || value === "pipeline" || value === "speech-to-speech") return value;
+  throw new Error(`[voice-gateway] Invalid mode "${value}". Must be auto, pipeline, or speech-to-speech.`);
+}
+
 // ── Main resolver ─────────────────────────────────────────────────────────────
 
 export function resolveConfig(raw: RawConfig): ResolvedConfig {
@@ -126,10 +131,7 @@ export function resolveConfig(raw: RawConfig): ResolvedConfig {
 
   const discordToken = requireField(raw.discordToken, "DISCORD_TOKEN", "discordToken");
 
-  const mode = (raw.mode ?? "auto") as VoiceMode;
-  if (!["auto", "pipeline", "speech-to-speech"].includes(mode)) {
-    throw new Error(`[voice-gateway] Invalid mode "${mode}". Must be auto, pipeline, or speech-to-speech.`);
-  }
+  const mode = assertVoiceMode(raw.mode ?? "auto");
 
   return { discordToken, mode, stt, tts, s2s, vad, behavior };
 }

@@ -60,12 +60,7 @@ export class VoiceSession extends EventEmitter {
 
   /** Join the configured voice channel and start the engine. */
   async start(): Promise<void> {
-    let connection;
-    try {
-      connection = await this.discordConn.join(this.context.channelId);
-    } catch (err) {
-      throw err;
-    }
+    const connection = await this.discordConn.join(this.context.channelId);
 
     this.audioSender = new AudioSender(connection, this.audioPipeline);
     this.audioReceiver = new AudioReceiver(

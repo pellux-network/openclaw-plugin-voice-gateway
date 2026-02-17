@@ -4,7 +4,6 @@ import {
   DISCORD_SAMPLE_RATE,
   PROCESSING_SAMPLE_RATE,
   DISCORD_CHANNELS,
-  PROCESSING_CHANNELS,
   BYTES_PER_SAMPLE,
   OPUS_FRAME_DURATION_MS,
 } from "../constants.js";
@@ -120,7 +119,7 @@ export function resample(pcm: Buffer, fromRate: number, toRate: number): Buffer 
 /** Duplicate mono samples to stereo (16-bit PCM) */
 export function monoToStereo(mono: Buffer): Buffer {
   const samples = mono.length / BYTES_PER_SAMPLE;
-  const stereo = Buffer.allocUnsafe(samples * BYTES_PER_SAMPLE * PROCESSING_CHANNELS);
+  const stereo = Buffer.allocUnsafe(samples * BYTES_PER_SAMPLE * DISCORD_CHANNELS);
   for (let i = 0; i < samples; i++) {
     const val = mono.readInt16LE(i * BYTES_PER_SAMPLE);
     stereo.writeInt16LE(val, i * 4);

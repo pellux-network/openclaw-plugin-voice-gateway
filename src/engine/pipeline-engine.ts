@@ -5,7 +5,7 @@ import { createSttProvider } from "../providers/stt/stt-interface.js";
 import { createTtsProvider } from "../providers/tts/tts-interface.js";
 import { ConversationContext } from "../session/conversation-context.js";
 import type { CoreBridge } from "../core-bridge.js";
-import { SENTENCE_BOUNDARY_RE, TTS_MAX_CHARS } from "../constants.js";
+import { SENTENCE_BOUNDARY_RE, TTS_MAX_CHARS, PROCESSING_SAMPLE_RATE } from "../constants.js";
 
 /**
  * Pipeline engine: STT → OpenClaw agent (LLM) → TTS
@@ -31,7 +31,6 @@ export class PipelineEngine extends EventEmitter implements VoiceEngine {
   private fallbackTts: TtsProvider | null = null;
   private coreBridge: CoreBridge;
   private conversation: ConversationContext;
-  private session: VoiceSessionContext | null = null;
 
   // Per-user audio accumulation (for batch STT fallback)
   private userAudioBuffers = new Map<string, Buffer[]>();
@@ -47,7 +46,6 @@ export class PipelineEngine extends EventEmitter implements VoiceEngine {
   }
 
   async start(session: VoiceSessionContext): Promise<void> {
-    this.session = session;
     const { config } = session;
 
     // Initialize primary providers
@@ -192,7 +190,7 @@ export class PipelineEngine extends EventEmitter implements VoiceEngine {
   }
 
   private async transcribeWithFallback(audio: Buffer): Promise<{ text: string }> {
-    const sampleRate = this.session?.config.stt.deepgram.model ? 16_000 : 16_000;
+    const sampleRate = PROCESSING_SAMPLE_RATE;
 
     try {
       if (this.stt?.transcribe) {

@@ -1,5 +1,17 @@
 import type { ConversationTurn, ToolDefinition } from "./types.js";
 
+/** Shape of the OpenClaw plugin API object passed at runtime. */
+interface OpenClawApi {
+  runtime?: {
+    streamMessage?: (message: string, onToken: (token: string) => void) => Promise<void>;
+    sendMessage?: (message: string) => Promise<unknown>;
+  };
+  tools?: {
+    execute?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+    list?: () => Array<{ name: string; description: string; inputSchema?: Record<string, unknown>; parameters?: Record<string, unknown> }>;
+  };
+}
+
 /**
  * Bridges between the voice engine and the OpenClaw agent system.
  *
@@ -15,11 +27,9 @@ import type { ConversationTurn, ToolDefinition } from "./types.js";
  * We keep this decoupled from the engine to avoid circular deps.
  */
 export class CoreBridge {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private api: any;
+  private api: OpenClawApi;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor(api: any) {
+  constructor(api: OpenClawApi) {
     this.api = api;
   }
 
@@ -58,7 +68,7 @@ export class CoreBridge {
 
     // Fallback: non-streaming response
     if (this.api?.runtime?.sendMessage) {
-      const response = await this.api.runtime.sendMessage(fullMessage) as string;
+      const response = String(await this.api.runtime.sendMessage(fullMessage));
       onToken(response);
       return response;
     }
@@ -87,8 +97,7 @@ export class CoreBridge {
    */
   getAvailableTools(): ToolDefinition[] {
     if (this.api?.tools?.list) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tools = this.api.tools.list() as any[];
+      const tools = this.api.tools.list();
       return tools.map(t => ({
         name: t.name,
         description: t.description,

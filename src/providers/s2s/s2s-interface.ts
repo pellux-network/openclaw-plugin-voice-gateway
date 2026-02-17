@@ -5,6 +5,8 @@ export type { S2sProvider, S2sSession, S2sSessionOptions, ToolDefinition, ToolCa
 /**
  * Create an S2S provider by name.
  */
+export async function createS2sProvider(name: "openai-realtime", config: ResolvedOpenAiRealtimeConfig): Promise<S2sProvider>;
+export async function createS2sProvider(name: "gemini-live", config: ResolvedGeminiLiveConfig): Promise<S2sProvider>;
 export async function createS2sProvider(
   name: "openai-realtime" | "gemini-live",
   config: ResolvedOpenAiRealtimeConfig | ResolvedGeminiLiveConfig
