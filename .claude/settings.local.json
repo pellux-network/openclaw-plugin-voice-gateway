@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:clawhub.ai)",
+      "Read(//c/Users/Pellux/Coding//**)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.openclaw.ai)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(bun add:*)",
+      "Bash(bun run:*)",
+      "Bash(node -e:*)",
+      "Bash(test:*)"
+    ]
+  }
+}

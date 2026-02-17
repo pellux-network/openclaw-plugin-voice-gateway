@@ -1,0 +1,348 @@
+/**
+ * @openclaw/voice-gateway
+ *
+ * Real-time voice conversations in Discord voice channels.
+ * Supports dual-mode operation:
+ *   - "speech-to-speech": OpenAI Realtime API or Gemini Live (lowest latency)
+ *   - "pipeline": Deepgram STT → OpenClaw agent → Cartesia TTS (maximum provider choice)
+ *
+ * Auto mode (default) prefers speech-to-speech when credentials are available.
+ */
+
+import type { ResolvedConfig } from "./src/types.js";
+import { resolveConfig } from "./src/config.js";
+import type { RawConfig } from "./src/config.js";
+import { SessionManager } from "./src/session/session-manager.js";
+import { CoreBridge } from "./src/core-bridge.js";
+
+// ── Plugin definition ─────────────────────────────────────────────────────────
+
+const plugin = {
+  id: "voice-gateway",
+  name: "Voice Gateway",
+  description:
+    "Real-time voice conversations in Discord voice channels with dual-mode engine",
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  register(api: any) {
+    const logger = api.logger as {
+      info: (msg: string, ...args: unknown[]) => void;
+      warn: (msg: string, ...args: unknown[]) => void;
+      error: (msg: string, ...args: unknown[]) => void;
+    };
+
+    let config: ResolvedConfig | null = null;
+    let sessionManager: SessionManager | null = null;
+    let coreBridge: CoreBridge | null = null;
+
+    // ── Service lifecycle ──────────────────────────────────────────────────────
+
+    api.registerService({
+      id: "voice-gateway",
+
+      async start() {
+        try {
+          config = resolveConfig(api.config as RawConfig);
+          logger.info(`[voice-gateway] Starting in mode: ${config.mode}`);
+
+          coreBridge = new CoreBridge(api);
+          sessionManager = new SessionManager(config, coreBridge, logger);
+
+          logger.info("[voice-gateway] Service started");
+        } catch (err) {
+          logger.error("[voice-gateway] Failed to start", err);
+          throw err;
+        }
+      },
+
+      async stop() {
+        logger.info("[voice-gateway] Stopping service...");
+
+        if (sessionManager) {
+          await sessionManager.stopAll();
+          sessionManager = null;
+        }
+        coreBridge = null;
+        config = null;
+
+        logger.info("[voice-gateway] Service stopped");
+      },
+    });
+
+    // ── Gateway RPC methods ────────────────────────────────────────────────────
+
+    api.registerGatewayMethod(
+      "voice-gateway.join",
+      async ({ respond, params }: { respond: GatewayRespond; params: JoinParams }) => {
+        const { guildId, channelId } = params;
+
+        if (!guildId || !channelId) {
+          respond(false, { error: "guildId and channelId are required" });
+          return;
+        }
+
+        ensureRunning();
+
+        try {
+          const session = await sessionManager!.join(guildId, channelId);
+          respond(true, { guildId, channelId, mode: session.engine.mode });
+        } catch (err) {
+          respond(false, { error: String(err) });
+        }
+      }
+    );
+
+    api.registerGatewayMethod(
+      "voice-gateway.leave",
+      async ({ respond, params }: { respond: GatewayRespond; params: LeaveParams }) => {
+        const { guildId } = params;
+        if (!guildId) { respond(false, { error: "guildId is required" }); return; }
+
+        ensureRunning();
+
+        try {
+          await sessionManager!.leave(guildId);
+          respond(true, { guildId });
+        } catch (err) {
+          respond(false, { error: String(err) });
+        }
+      }
+    );
+
+    api.registerGatewayMethod(
+      "voice-gateway.speak",
+      async ({ respond, params }: { respond: GatewayRespond; params: SpeakParams }) => {
+        const { guildId, text } = params;
+        if (!guildId || !text) {
+          respond(false, { error: "guildId and text are required" });
+          return;
+        }
+
+        ensureRunning();
+
+        try {
+          const session = sessionManager!.getSession(guildId);
+          if (!session) {
+            respond(false, { error: `No active session in guild ${guildId}` });
+            return;
+          }
+          await session.injectText(text);
+          respond(true, { guildId, spoken: text });
+        } catch (err) {
+          respond(false, { error: String(err) });
+        }
+      }
+    );
+
+    api.registerGatewayMethod(
+      "voice-gateway.status",
+      async ({ respond, params }: { respond: GatewayRespond; params: StatusParams }) => {
+        const { guildId } = params;
+
+        const session = guildId ? sessionManager?.getSession(guildId) : null;
+        respond(true, {
+          running: config !== null,
+          mode: config?.mode,
+          guildId: guildId ?? null,
+          activeGuilds: sessionManager?.getActiveGuilds() ?? [],
+          active: !!session,
+          state: session?.state ?? null,
+          engineMode: session?.engine.mode ?? null,
+        });
+      }
+    );
+
+    // ── Agent tool ─────────────────────────────────────────────────────────────
+
+    api.registerTool({
+      name: "discord_voice",
+      description:
+        "Manage Discord voice channel connections. " +
+        "Join or leave a voice channel, inject text to be spoken, or check status.",
+      inputSchema: {
+        type: "object",
+        required: ["action", "guildId"],
+        additionalProperties: false,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["join", "leave", "speak", "status"],
+            description: "Action to perform",
+          },
+          guildId: {
+            type: "string",
+            description: "Discord guild (server) ID",
+          },
+          channelId: {
+            type: "string",
+            description: "Voice channel ID — required for join",
+          },
+          text: {
+            type: "string",
+            description: "Text to speak — required for speak action",
+          },
+        },
+      },
+      async execute(input: Record<string, unknown>) {
+        const { action, guildId, channelId, text } = input as {
+          action: string;
+          guildId: string;
+          channelId?: string;
+          text?: string;
+        };
+
+        if (!sessionManager) {
+          return { content: [{ type: "text", text: "Voice gateway is not running" }] };
+        }
+
+        switch (action) {
+          case "join": {
+            if (!channelId) {
+              return { content: [{ type: "text", text: "channelId is required for join" }] };
+            }
+            const session = await sessionManager.join(guildId, channelId);
+            return {
+              content: [{
+                type: "text",
+                text: `Joined voice channel ${channelId} in guild ${guildId} (mode: ${session.engine.mode})`,
+              }],
+            };
+          }
+
+          case "leave":
+            await sessionManager.leave(guildId);
+            return { content: [{ type: "text", text: `Left voice channel in guild ${guildId}` }] };
+
+          case "speak": {
+            if (!text) {
+              return { content: [{ type: "text", text: "text is required for speak" }] };
+            }
+            const s = sessionManager.getSession(guildId);
+            if (!s) {
+              return { content: [{ type: "text", text: `Not in a voice channel in guild ${guildId}` }] };
+            }
+            await s.injectText(text);
+            return { content: [{ type: "text", text: `Speaking: "${text}"` }] };
+          }
+
+          case "status": {
+            const s = sessionManager.getSession(guildId);
+            const activeGuilds = sessionManager.getActiveGuilds();
+            return {
+              content: [{
+                type: "text",
+                text: s
+                  ? `Active in guild ${guildId}: state=${s.state}, engine=${s.engine.mode}`
+                  : `Not active in guild ${guildId}. Active guilds: ${activeGuilds.join(", ") || "none"}`,
+              }],
+            };
+          }
+
+          default:
+            return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
+        }
+      },
+    });
+
+    // ── CLI commands ───────────────────────────────────────────────────────────
+
+    api.registerCli(({ program }: { program: { command: (name: string) => CLICommand } }) => {
+      const voice = program.command("voice")
+        .description("Discord voice channel management");
+
+      voice
+        .command("join")
+        .argument("<guildId>", "Discord guild ID")
+        .argument("<channelId>", "Voice channel ID")
+        .description("Join a Discord voice channel")
+        .action(async (...args: unknown[]) => {
+          const [guildId, channelId] = args as [string, string];
+          if (!sessionManager) { console.error("Voice gateway is not running"); return; }
+          try {
+            const session = await sessionManager.join(guildId, channelId);
+            console.log(`Joined channel ${channelId} in guild ${guildId} (mode: ${session.engine.mode})`);
+          } catch (err) {
+            console.error("Failed to join:", err);
+          }
+        });
+
+      voice
+        .command("leave")
+        .argument("<guildId>", "Discord guild ID")
+        .description("Leave the current voice channel")
+        .action(async (...args: unknown[]) => {
+          const [guildId] = args as [string];
+          if (!sessionManager) { console.error("Voice gateway is not running"); return; }
+          try {
+            await sessionManager.leave(guildId);
+            console.log(`Left voice channel in guild ${guildId}`);
+          } catch (err) {
+            console.error("Failed to leave:", err);
+          }
+        });
+
+      voice
+        .command("speak")
+        .argument("<guildId>", "Discord guild ID")
+        .argument("<text>", "Text to speak")
+        .description("Speak text in the voice channel")
+        .action(async (...args: unknown[]) => {
+          const [guildId, text] = args as [string, string];
+          if (!sessionManager) { console.error("Voice gateway is not running"); return; }
+          const session = sessionManager.getSession(guildId);
+          if (!session) { console.error(`Not in a voice channel in guild ${guildId}`); return; }
+          try {
+            await session.injectText(text);
+            console.log(`Speaking: "${text}"`);
+          } catch (err) {
+            console.error("Failed to speak:", err);
+          }
+        });
+
+      voice
+        .command("status")
+        .argument("[guildId]", "Discord guild ID (optional)")
+        .description("Show voice channel status")
+        .action(async (...args: unknown[]) => {
+          const [guildId] = args as [string | undefined];
+          if (!sessionManager) { console.log("Voice gateway is not running"); return; }
+
+          const activeGuilds = sessionManager.getActiveGuilds();
+          if (guildId) {
+            const session = sessionManager.getSession(guildId);
+            if (session) {
+              console.log(`Guild ${guildId}: state=${session.state}, engine=${session.engine.mode}`);
+            } else {
+              console.log(`Not active in guild ${guildId}`);
+            }
+          } else {
+            console.log(`Active guilds (${activeGuilds.length}): ${activeGuilds.join(", ") || "none"}`);
+          }
+        });
+    }, { commands: ["voice"] });
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    function ensureRunning(): void {
+      if (!config || !sessionManager) {
+        throw new Error("[voice-gateway] Service is not running");
+      }
+    }
+  },
+};
+
+export default plugin;
+
+// ── Local types for untyped OpenClaw API ──────────────────────────────────────
+
+type GatewayRespond = (success: boolean, data: Record<string, unknown>) => void;
+interface JoinParams { guildId: string; channelId: string }
+interface LeaveParams { guildId: string }
+interface SpeakParams { guildId: string; text: string }
+interface StatusParams { guildId?: string }
+interface CLICommand {
+  command: (name: string) => CLICommand;
+  argument: (name: string, desc?: string) => CLICommand;
+  description: (desc: string) => CLICommand;
+  action: (fn: (...args: unknown[]) => unknown) => CLICommand;
+}
