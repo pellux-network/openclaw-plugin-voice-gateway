@@ -46,6 +46,9 @@ const plugin = {
           logger.info(`[voice-gateway] Starting in mode: ${config.mode}`);
 
           coreBridge = new CoreBridge(api);
+
+          registerToolsOnBridge(coreBridge);
+
           sessionManager = new SessionManager(config, coreBridge, logger);
 
           logger.info("[voice-gateway] Service started");
@@ -154,95 +157,114 @@ const plugin = {
 
     // ── Agent tool ─────────────────────────────────────────────────────────────
 
+    const DISCORD_VOICE_SCHEMA = {
+      type: "object",
+      required: ["action", "guildId"],
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["join", "leave", "speak", "status"],
+          description: "Action to perform",
+        },
+        guildId: {
+          type: "string",
+          description: "Discord guild (server) ID",
+        },
+        channelId: {
+          type: "string",
+          description: "Voice channel ID — required for join",
+        },
+        text: {
+          type: "string",
+          description: "Text to speak — required for speak action",
+        },
+      },
+    } as const;
+
+    async function handleDiscordVoiceTool(input: Record<string, unknown>) {
+      const { action, guildId, channelId, text } = input as {
+        action: string;
+        guildId: string;
+        channelId?: string;
+        text?: string;
+      };
+
+      if (!sessionManager) {
+        return { content: [{ type: "text", text: "Voice gateway is not running" }] };
+      }
+
+      switch (action) {
+        case "join": {
+          if (!channelId) {
+            return { content: [{ type: "text", text: "channelId is required for join" }] };
+          }
+          const session = await sessionManager.join(guildId, channelId);
+          return {
+            content: [{
+              type: "text",
+              text: `Joined voice channel ${channelId} in guild ${guildId} (mode: ${session.engine.mode})`,
+            }],
+          };
+        }
+
+        case "leave":
+          await sessionManager.leave(guildId);
+          return { content: [{ type: "text", text: `Left voice channel in guild ${guildId}` }] };
+
+        case "speak": {
+          if (!text) {
+            return { content: [{ type: "text", text: "text is required for speak" }] };
+          }
+          const s = sessionManager.getSession(guildId);
+          if (!s) {
+            return { content: [{ type: "text", text: `Not in a voice channel in guild ${guildId}` }] };
+          }
+          await s.injectText(text);
+          return { content: [{ type: "text", text: `Speaking: "${text}"` }] };
+        }
+
+        case "status": {
+          const s = sessionManager.getSession(guildId);
+          const activeGuilds = sessionManager.getActiveGuilds();
+          return {
+            content: [{
+              type: "text",
+              text: s
+                ? `Active in guild ${guildId}: state=${s.state}, engine=${s.engine.mode}`
+                : `Not active in guild ${guildId}. Active guilds: ${activeGuilds.join(", ") || "none"}`,
+            }],
+          };
+        }
+
+        default:
+          return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
+      }
+    }
+
+    // Register for OpenClaw agent access
     api.registerTool({
       name: "discord_voice",
       description:
         "Manage Discord voice channel connections. " +
         "Join or leave a voice channel, inject text to be spoken, or check status.",
-      inputSchema: {
-        type: "object",
-        required: ["action", "guildId"],
-        additionalProperties: false,
-        properties: {
-          action: {
-            type: "string",
-            enum: ["join", "leave", "speak", "status"],
-            description: "Action to perform",
-          },
-          guildId: {
-            type: "string",
-            description: "Discord guild (server) ID",
-          },
-          channelId: {
-            type: "string",
-            description: "Voice channel ID — required for join",
-          },
-          text: {
-            type: "string",
-            description: "Text to speak — required for speak action",
-          },
-        },
-      },
-      async execute(input: Record<string, unknown>) {
-        const { action, guildId, channelId, text } = input as {
-          action: string;
-          guildId: string;
-          channelId?: string;
-          text?: string;
-        };
-
-        if (!sessionManager) {
-          return { content: [{ type: "text", text: "Voice gateway is not running" }] };
-        }
-
-        switch (action) {
-          case "join": {
-            if (!channelId) {
-              return { content: [{ type: "text", text: "channelId is required for join" }] };
-            }
-            const session = await sessionManager.join(guildId, channelId);
-            return {
-              content: [{
-                type: "text",
-                text: `Joined voice channel ${channelId} in guild ${guildId} (mode: ${session.engine.mode})`,
-              }],
-            };
-          }
-
-          case "leave":
-            await sessionManager.leave(guildId);
-            return { content: [{ type: "text", text: `Left voice channel in guild ${guildId}` }] };
-
-          case "speak": {
-            if (!text) {
-              return { content: [{ type: "text", text: "text is required for speak" }] };
-            }
-            const s = sessionManager.getSession(guildId);
-            if (!s) {
-              return { content: [{ type: "text", text: `Not in a voice channel in guild ${guildId}` }] };
-            }
-            await s.injectText(text);
-            return { content: [{ type: "text", text: `Speaking: "${text}"` }] };
-          }
-
-          case "status": {
-            const s = sessionManager.getSession(guildId);
-            const activeGuilds = sessionManager.getActiveGuilds();
-            return {
-              content: [{
-                type: "text",
-                text: s
-                  ? `Active in guild ${guildId}: state=${s.state}, engine=${s.engine.mode}`
-                  : `Not active in guild ${guildId}. Active guilds: ${activeGuilds.join(", ") || "none"}`,
-              }],
-            };
-          }
-
-          default:
-            return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
-        }
-      },
+      inputSchema: DISCORD_VOICE_SCHEMA,
+      execute: handleDiscordVoiceTool,
     });
+
+    // Register on CoreBridge for S2S provider access
+    function registerToolsOnBridge(bridge: CoreBridge) {
+      bridge.registerTool(
+        {
+          name: "discord_voice",
+          description:
+            "Manage Discord voice channel connections. " +
+            "Join or leave a voice channel, inject text to be spoken, or check status.",
+          parameters: DISCORD_VOICE_SCHEMA,
+        },
+        handleDiscordVoiceTool
+      );
+    }
 
     // ── CLI commands ───────────────────────────────────────────────────────────
 

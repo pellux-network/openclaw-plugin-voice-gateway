@@ -1,109 +1,210 @@
 import type { ConversationTurn, ToolDefinition } from "./types.js";
 
-/** Shape of the OpenClaw plugin API object passed at runtime. */
+// ── OpenClaw API types (from api.runtime.channel.reply) ─────────────────────
+
+/** Inbound message context — describes the user message being dispatched. */
+interface MsgContext {
+  Body?: string;
+  BodyForAgent?: string;
+  From?: string;
+  To?: string;
+  SessionKey?: string;
+  Surface?: string;
+  Provider?: string;
+  SenderName?: string;
+  SenderId?: string;
+  ChatType?: string;
+  Timestamp?: number;
+  MessageSid?: string;
+  InboundHistory?: Array<{ sender: string; body: string; timestamp?: number }>;
+}
+
+/** Payload delivered by the dispatcher when the agent produces a reply. */
+interface ReplyPayload {
+  text?: string;
+  mediaUrl?: string;
+  [key: string]: unknown;
+}
+
+type ReplyDispatchKind = "tool" | "block" | "final";
+
+interface ReplyDispatcherWithTypingOptions {
+  deliver: (payload: ReplyPayload, info: { kind: ReplyDispatchKind }) => Promise<void>;
+  onReplyStart?: () => Promise<void> | void;
+  onIdle?: () => void;
+  onCleanup?: () => void;
+  onError?: (err: unknown, info: { kind: ReplyDispatchKind }) => void;
+  onSkip?: (payload: ReplyPayload, info: { kind: ReplyDispatchKind; reason: string }) => void;
+}
+
+interface DispatchInboundResult {
+  queuedFinal: boolean;
+  counts: Record<ReplyDispatchKind, number>;
+}
+
+/** The subset of api.runtime we actually use. */
+interface ChannelReplyRuntime {
+  dispatchReplyWithBufferedBlockDispatcher: (params: {
+    ctx: MsgContext;
+    cfg: unknown;
+    dispatcherOptions: ReplyDispatcherWithTypingOptions;
+  }) => Promise<DispatchInboundResult>;
+  finalizeInboundContext?: (ctx: MsgContext) => MsgContext;
+}
+
+/** The real OpenClaw plugin API surface used by CoreBridge. */
 interface OpenClawApi {
-  runtime?: {
-    streamMessage?: (message: string, onToken: (token: string) => void) => Promise<void>;
-    sendMessage?: (message: string) => Promise<unknown>;
+  logger: {
+    info(msg: string, ...args: unknown[]): void;
+    warn(msg: string, ...args: unknown[]): void;
+    error(msg: string, ...args: unknown[]): void;
   };
-  tools?: {
-    execute?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
-    list?: () => Array<{ name: string; description: string; inputSchema?: Record<string, unknown>; parameters?: Record<string, unknown> }>;
+  config: unknown;
+  runtime: {
+    channel: {
+      reply: ChannelReplyRuntime;
+    };
   };
 }
 
+interface RegisteredTool {
+  definition: ToolDefinition;
+  execute: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
 /**
- * Bridges between the voice engine and the OpenClaw agent system.
+ * Bridges between voice engines and the OpenClaw agent system.
  *
- * In pipeline mode:
- *   - Sends transcribed user speech to the OpenClaw agent
- *   - Streams the LLM's token-by-token response back for TTS pipelining
+ * Pipeline mode:
+ *   - Dispatches transcribed speech to the OpenClaw agent via the channel reply API
+ *   - Agent replies flow back through a deliver callback → TTS pipeline
  *
- * In speech-to-speech mode:
- *   - Executes tool calls from OpenAI Realtime / Gemini Live
- *   - Returns results back to the provider
- *
- * The OpenClaw agent API is loaded at runtime via the plugin API object.
- * We keep this decoupled from the engine to avoid circular deps.
+ * S2S mode:
+ *   - Local tool registry for S2S providers to call
  */
 export class CoreBridge {
-  private api: OpenClawApi;
+  private logger: OpenClawApi["logger"];
+  private replyRuntime: ChannelReplyRuntime;
+  private cfg: unknown;
+  private toolRegistry = new Map<string, RegisteredTool>();
 
   constructor(api: OpenClawApi) {
-    this.api = api;
+    this.logger = api.logger;
+    this.replyRuntime = api.runtime.channel.reply;
+    this.cfg = api.config;
   }
 
+  // ── Pipeline mode ─────────────────────────────────────────────────────────────
+
   /**
-   * Stream an agent response for a user message.
-   * Calls `onToken` for each token as it arrives.
-   * Returns the full response text when done.
+   * Dispatch transcribed speech to the OpenClaw agent and stream the response.
    *
-   * @param userId   Discord user ID (for attribution)
-   * @param text     The transcribed user message
-   * @param history  Recent conversation turns for context
-   * @param onToken  Called with each streaming token
+   * Builds a MsgContext from the user's utterance, dispatches it through the
+   * OpenClaw agent pipeline, and calls onChunk with each response chunk as
+   * it arrives. Returns the full concatenated response.
    */
   async streamAgentResponse(
     userId: string,
     text: string,
     history: readonly ConversationTurn[],
-    onToken: (token: string) => void
+    onChunk: (text: string) => void
   ): Promise<string> {
-    // Build context prefix from conversation history
-    const contextPrefix = history.length > 0
-      ? history.map(t => `${t.role === "user" ? "User" : "Assistant"}: ${t.content}`).join("\n") + "\n"
-      : "";
+    const chunks: string[] = [];
 
-    const fullMessage = contextPrefix + `User (${userId}): ${text}`;
+    const ctx = this.buildMsgContext(userId, text, history);
 
-    // Try to use the OpenClaw agent streaming API if available
-    if (this.api?.runtime?.streamMessage) {
-      const chunks: string[] = [];
-      await this.api.runtime.streamMessage(fullMessage, (token: string) => {
-        chunks.push(token);
-        onToken(token);
+    try {
+      await this.replyRuntime.dispatchReplyWithBufferedBlockDispatcher({
+        ctx,
+        cfg: this.cfg,
+        dispatcherOptions: {
+          deliver: async (payload) => {
+            if (payload.text) {
+              chunks.push(payload.text);
+              onChunk(payload.text);
+            }
+          },
+          onError: (err, { kind }) => {
+            this.logger.error(`[core-bridge] Agent dispatch error (${kind})`, err);
+          },
+        },
       });
-      return chunks.join("");
+    } catch (err) {
+      this.logger.error("[core-bridge] Agent dispatch failed", err);
+      const errMsg = "[Error generating response]";
+      onChunk(errMsg);
+      return errMsg;
     }
 
-    // Fallback: non-streaming response
-    if (this.api?.runtime?.sendMessage) {
-      const response = String(await this.api.runtime.sendMessage(fullMessage));
-      onToken(response);
-      return response;
+    const fullResponse = chunks.join("");
+    if (!fullResponse) {
+      const fallback = "[No response from agent]";
+      onChunk(fallback);
+      return fallback;
     }
 
-    // If neither API is available, return a placeholder
-    // (This happens when the plugin is running without a full OpenClaw agent context)
-    const fallback = "[Agent not available]";
-    onToken(fallback);
-    return fallback;
+    return fullResponse;
   }
 
-  /**
-   * Execute a tool call from a speech-to-speech provider.
-   * Bridges native function calls (OpenAI Realtime / Gemini Live) to OpenClaw tools.
-   */
-  async executeToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
-    if (this.api?.tools?.execute) {
-      return this.api.tools.execute(name, args);
-    }
-    return { error: `Tool ${name} not available` };
+  // ── S2S tool registry ─────────────────────────────────────────────────────────
+
+  /** Register a tool for S2S providers to call. */
+  registerTool(
+    definition: ToolDefinition,
+    handler: (args: Record<string, unknown>) => Promise<unknown>
+  ): void {
+    this.toolRegistry.set(definition.name, { definition, execute: handler });
+    this.logger.info(`[core-bridge] Registered tool: ${definition.name}`);
   }
 
-  /**
-   * Get available tool definitions in OpenAI function-calling format.
-   * Used to register tools with speech-to-speech providers.
-   */
+  /** Get all registered tool definitions for S2S provider session setup. */
   getAvailableTools(): ToolDefinition[] {
-    if (this.api?.tools?.list) {
-      const tools = this.api.tools.list();
-      return tools.map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema ?? t.parameters ?? {},
-      }));
+    return Array.from(this.toolRegistry.values()).map(e => e.definition);
+  }
+
+  /** Execute a tool call from a speech-to-speech provider. */
+  async executeToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const entry = this.toolRegistry.get(name);
+    if (!entry) {
+      this.logger.warn(`[core-bridge] Tool not found: ${name}`);
+      return { error: `Tool "${name}" is not registered` };
     }
-    return [];
+
+    try {
+      return await entry.execute(args);
+    } catch (err) {
+      this.logger.error(`[core-bridge] Tool execution failed: ${name}`, err);
+      return { error: String(err) };
+    }
+  }
+
+  // ── Internal ──────────────────────────────────────────────────────────────────
+
+  private buildMsgContext(
+    userId: string,
+    text: string,
+    history: readonly ConversationTurn[]
+  ): MsgContext {
+    // Build inbound history from conversation turns
+    const inboundHistory = history.map(turn => ({
+      sender: turn.role === "user" ? (turn.userId ?? userId) : "assistant",
+      body: turn.content,
+      timestamp: turn.timestamp,
+    }));
+
+    return {
+      Body: text,
+      BodyForAgent: text,
+      From: userId,
+      SenderId: userId,
+      SenderName: history.find(t => t.role === "user" && t.username)?.username ?? userId,
+      Surface: "discord-voice",
+      Provider: "voice-gateway",
+      ChatType: "direct",
+      SessionKey: `voice:${userId}`,
+      Timestamp: Date.now(),
+      MessageSid: `voice-${userId}-${Date.now()}`,
+      InboundHistory: inboundHistory,
+    };
   }
 }
