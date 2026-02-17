@@ -178,6 +178,74 @@ export class CoreBridge {
     }
   }
 
+  // ── Session summary ────────────────────────────────────────────────────────────
+
+  /**
+   * Dispatch a voice session transcript to the OpenClaw agent on session end.
+   * The agent receives the full conversation as context and replies with a
+   * brief status acknowledgement, keeping the conversation in its memory.
+   */
+  async dispatchSessionSummary(
+    engineMode: string,
+    history: readonly ConversationTurn[]
+  ): Promise<void> {
+    if (history.length === 0) {
+      this.logger.info("[core-bridge] No conversation to summarize");
+      return;
+    }
+
+    const transcript = history
+      .map(t => {
+        const speaker = t.role === "user"
+          ? (t.username ? `User (${t.username})` : "User")
+          : "Assistant";
+        return `${speaker}: ${t.content}`;
+      })
+      .join("\n");
+
+    const summaryText =
+      `[Voice session ended — ${engineMode} mode, ${history.length} turns]\n\n` +
+      `Transcript:\n${transcript}\n\n` +
+      `Please briefly acknowledge this voice conversation for your records.`;
+
+    // Use the first user in the conversation as the sender, or "system"
+    const firstUser = history.find(t => t.role === "user");
+    const userId = firstUser?.userId ?? "system";
+
+    const ctx: MsgContext = {
+      Body: summaryText,
+      BodyForAgent: summaryText,
+      From: userId,
+      SenderId: userId,
+      SenderName: firstUser?.username ?? "voice-gateway",
+      Surface: "discord-voice",
+      Provider: "voice-gateway",
+      ChatType: "direct",
+      SessionKey: `voice:${userId}`,
+      Timestamp: Date.now(),
+      MessageSid: `voice-summary-${Date.now()}`,
+    };
+
+    try {
+      await this.replyRuntime.dispatchReplyWithBufferedBlockDispatcher({
+        ctx,
+        cfg: this.cfg,
+        dispatcherOptions: {
+          deliver: async () => {
+            // Discard the agent's response — we only want the side effect
+            // of recording this conversation in the agent's memory
+          },
+          onError: (err) => {
+            this.logger.error("[core-bridge] Session summary dispatch error", err);
+          },
+        },
+      });
+      this.logger.info(`[core-bridge] Session summary dispatched (${history.length} turns)`);
+    } catch (err) {
+      this.logger.error("[core-bridge] Failed to dispatch session summary", err);
+    }
+  }
+
   // ── Internal ──────────────────────────────────────────────────────────────────
 
   private buildMsgContext(

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { VoiceEngine } from "./engine-interface.js";
-import type { VoiceSessionContext, SttProvider, TtsProvider } from "../types.js";
+import type { ConversationTurn, VoiceSessionContext, SttProvider, TtsProvider } from "../types.js";
 import { createSttProvider } from "../providers/stt/stt-interface.js";
 import { createTtsProvider } from "../providers/tts/tts-interface.js";
 import { ConversationContext } from "../session/conversation-context.js";
@@ -92,6 +92,10 @@ export class PipelineEngine extends EventEmitter implements VoiceEngine {
   interrupt(): void {
     this.interrupted = true;
     // Engines emit "interrupted" — session handles stopping playback
+  }
+
+  getConversationHistory(): readonly ConversationTurn[] {
+    return this.conversation.getHistory();
   }
 
   async stop(): Promise<void> {

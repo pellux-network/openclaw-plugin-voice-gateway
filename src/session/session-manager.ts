@@ -94,7 +94,22 @@ export class SessionManager {
     }
 
     this.sessions.delete(guildId);
+
+    // Grab conversation history before stop (history survives stop but not GC)
+    const history = session.engine.getConversationHistory();
+    const engineMode = session.engine.mode;
+
     await session.stop();
+
+    // In S2S mode the agent never sees the conversation during the session,
+    // so dispatch a summary for its memory/context. Pipeline mode already
+    // dispatches every turn via streamAgentResponse — no summary needed.
+    if (engineMode === "speech-to-speech" && history.length > 0) {
+      this.coreBridge.dispatchSessionSummary(engineMode, history).catch((err) => {
+        this.logger.error(`[SessionManager] Session summary failed for guild ${guildId}:`, err);
+      });
+    }
+
     this.logger.info(`[SessionManager] Left voice channel in guild ${guildId}`);
   }
 

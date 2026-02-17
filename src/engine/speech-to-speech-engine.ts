@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { VoiceEngine } from "./engine-interface.js";
-import type { VoiceSessionContext, S2sProvider, S2sSession } from "../types.js";
+import type { ConversationTurn, VoiceSessionContext, S2sProvider, S2sSession } from "../types.js";
 import { createS2sProvider } from "../providers/s2s/s2s-interface.js";
 import { ConversationContext } from "../session/conversation-context.js";
 import type { CoreBridge } from "../core-bridge.js";
@@ -72,6 +72,10 @@ export class SpeechToSpeechEngine extends EventEmitter implements VoiceEngine {
 
   interrupt(): void {
     this.session?.cancelResponse();
+  }
+
+  getConversationHistory(): readonly ConversationTurn[] {
+    return this.conversation.getHistory();
   }
 
   async stop(): Promise<void> {

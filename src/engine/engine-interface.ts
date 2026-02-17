@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import type { EngineMode, VoiceSessionContext } from "../types.js";
+import type { ConversationTurn, EngineMode, VoiceSessionContext } from "../types.js";
 
 /**
  * Shared contract for both PipelineEngine (STT→LLM→TTS)
@@ -38,6 +38,9 @@ export interface VoiceEngine extends EventEmitter {
    * Stops ongoing TTS playback and cancels in-flight requests.
    */
   interrupt(): void;
+
+  /** Get the conversation history for this session. */
+  getConversationHistory(): readonly ConversationTurn[];
 
   /** Stop the engine and clean up all resources. */
   stop(): Promise<void>;
